@@ -1,0 +1,286 @@
+<script>
+const serviceUuid = '093b30d3-2d5b-4960-b561-852829ab91b1'
+const wifiSetupCharacteristicUuid = 'b52828ba-1af4-4e12-bc17-aeed13c743e5'
+
+let podDevice = null
+let wifiCharacteristic = null
+
+const $ = {
+	selectPodBtn: 'findDevice',
+	clearDeviceBtn: 'clearDevice',
+	selectedPodName: 'selectedPodName',
+	podBluetoothError: 'podBluetoothError',
+
+	establishContactBtn: 'establishContact',
+	serverStatus: 'serverStatus',
+	characteristicStatus: 'characteristicStatus',
+	contactError: 'contactError',
+
+	ssid: 'ssid',
+	password: 'password',
+	loginBtn: 'login',
+	togglePassword: 'togglePassword',
+	
+	stepOneComplete: 'stepOneComplete',
+	stepTwoComplete: 'stepTwoComplete',
+	
+	bluetoothNotSupported: 'bluetoothNotSupported',
+	compressionNotSupported: 'compressionNotSupported'
+}
+
+async function selectPod() {
+	$.podBluetoothError.textContent = '' // Clear any previous error
+
+	try {
+		podDevice = await navigator.bluetooth.requestDevice({
+			filters: [
+				{ services: [serviceUuid, wifiSetupCharacteristicUuid] },
+				{ namePrefix: ['pod-'] }
+			]
+		})
+		
+		$.selectedPodName.textContent = 'Using device: ' + podDevice.name
+		$.selectPodBtn.disabled = true
+		$.clearDeviceBtn.disabled = false
+		$.stepOneComplete.classList.remove('hidden')
+	} catch (e) {
+		// no device selected
+		console.error(e)
+		$.podBluetoothError.textContent = 'An error occurred while connecting to the pod via Bluetooth. Please try again. Ensure you have Bluetooth enabled and you are in close proximity to the pod.'
+	}
+}
+
+async function connectToPod() {
+	$.serverStatus.textContent = ''
+	$.characteristicStatus.textContent = ''
+	$.contactError.textContent = ''
+	
+	$.establishContactBtn.disabled = true
+
+	try {
+		const gattServer = podDevice.gatt
+		if (!gattServer.connected) {
+			await gattServer.connect()
+		}
+		$.serverStatus.textContent = 'GATT server: Connected'
+		
+		const primaryService = await gattServer.getPrimaryService(serviceUuid)
+		wifiCharacteristic = await primaryService.getCharacteristic(wifiSetupCharacteristicUuid)
+		$.characteristicStatus.textContent = 'Found Wi-Fi setup characteristic!'
+		$.stepTwoComplete.classList.remove('hidden')
+	} catch (e) {
+		console.error(e)
+		$.contactError.textContent = 'An error occurred while connecting to the pod via Bluetooth. Please try again.'
+		$.establishContactBtn.disabled = false
+	}
+}
+
+async function compressedTextToArrayBuffer(str) {
+	const strAsStream = new Blob([str]).stream()
+	const compressedStream = strAsStream.pipeThrough(
+		new CompressionStream('gzip')
+	)
+	
+	const compressedArrayBuffer = await new Response(compressedStream).arrayBuffer()
+	return compressedArrayBuffer
+}
+
+async function sendCredentialsToPod() {
+	const jsonBody = {
+		ssid: $.ssid.value,
+		password: $.password.value
+	}
+
+	if (!jsonBody.ssid) { // password is technically optional, although unlikely
+		alert('You must supply the SSID of the Wi-Fi network to connect to!')
+		return
+	}
+	
+	$.loginBtn.disabled = true
+
+	const arrayBuffer = await compressedTextToArrayBuffer(JSON.stringify(jsonBody))
+
+	await wifiCharacteristic.writeValueWithoutResponse(arrayBuffer)
+	
+	$.loginBtn.disabled = false
+}
+
+function togglePasswordVisibility() {
+	if ($.password.type === 'password') {
+		$.password.type = 'text'
+		$.togglePassword.textContent = 'Hide'
+	} else {
+		$.password.type = 'password'
+		$.togglePassword.textContent = 'Show'
+	}
+}
+
+async function loadPreviouslyConnectedPod() {
+	// Load any previously-connected pod
+	const devices = await navigator.bluetooth.getDevices()
+	for (const device of devices) {
+		if (device.name.startsWith('pod-')) {
+			podDevice = device
+			$.selectPodBtn.disabled = true
+			$.selectedPodName.textContent = 'Using device: ' + podDevice.name
+			$.stepOneComplete.classList.remove('hidden')
+			
+			// for previously-loaded Bluetooth devices, the browser may "forget"
+			// that the device is in range, so we need to watch for advertisements
+			// to keep the browser's knowledge of if the device is in range fresh
+			podDevice.watchAdvertisements()
+			
+			break
+		}
+	}
+	
+	if (devices.length === 0) {
+		$.clearDeviceBtn.disabled = true
+	}
+}
+
+async function clearDevices() {
+	const devices = await navigator.bluetooth.getDevices()
+	for (const device of devices) {
+		await device.forget()
+	}
+	$.selectPodBtn.disabled = false
+	$.clearDeviceBtn.disabled = true
+	$.selectedPodName.textContent = ''
+	$.stepOneComplete.classList.add('hidden')
+}
+
+function enforceAPIsAreAvailable() {
+	let browserIsSupported = true
+
+	// Bluetooth not available
+	if (!navigator.bluetooth || !navigator.bluetooth.getDevices) {
+		$.bluetoothNotSupported.classList.remove('hidden')
+		browserIsSupported = false
+	}
+	
+	// Compression Streams not supported
+	if (!CompressionStream) {
+		$.compressionNotSupported.classList.remove('hidden')
+		browserIsSupported = false
+	}
+	
+	return browserIsSupported
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+	// Register all of the DOM elements for easy lookup
+	Object.keys($).forEach((key) => {
+		$[key] = document.getElementById($[key])
+	})
+	
+	// Check that the browser supports the needed APIs to use this tool; if not, bail out
+	if(!enforceAPIsAreAvailable()) {
+		return
+	}
+	
+	$.selectPodBtn.addEventListener('click', selectPod)
+	$.loginBtn.addEventListener('click', sendCredentialsToPod)
+	$.togglePassword.addEventListener('click', togglePasswordVisibility)
+	$.clearDeviceBtn.addEventListener('click', clearDevices)
+	$.establishContactBtn.addEventListener('click', connectToPod)
+	
+	await loadPreviouslyConnectedPod()
+})
+</script>
+
+<style>
+html, body {
+	background-color: #f3f3f3;
+	line-height: 1.5em;
+	font-size: 1.1em;
+	margin: 2% 10%;
+}
+fieldset {
+	background-color: #fff;
+	margin-top: 40px;
+}
+legend {
+	background-color: #fff;
+	padding: 4px 12px;
+	border: 1px solid #777;
+	font-weight: bold;
+}
+
+ul li { margin: 8px 0; }
+
+code { background-color: #eee; padding: 2px; }
+
+.success { color: #22bb33; }
+.error { color: #bb2124; }
+.error-box { border: 1px solid #bb2124; padding: 4px; background-color: #bb212422; }
+.hidden { display: none; }
+</style>
+
+<html>
+	<head>
+		<title>Pod Wi-Fi pairing tool</title>
+	</head>
+	<body>
+		<fieldset>
+			<legend>😀 Pod Wi-Fi pairing tool</legend>
+			<noscript>
+				<p class="error error-box">⚠ You must have JavaScript enabled to use this tool! Javascript is currently disabled. Please enable it and refresh the page.</p>
+			</noscript>
+			<p id="bluetoothNotSupported" class="error error-box hidden">⚠ Your browser does not support Web Bluetooth API. This is required to run this tool. Please update to the latest version of your browser, or switch to Chrome.</p>
+			<p id="compressionNotSupported" class="error error-box hidden">⚠ Your browser does not support Compression Streams API. This is required to run this tool. Please update to the latest version of your browser, or switch to Chrome.</p>
+			<p>This web page allows you to pair your Eight Sleep Pod 3, allowing it to connect to the desired Wi-Fi network. Normally this is accomplished through the Eight Sleep app, but due to persistent issues with their app (such as Bluetooth permissions being impossible to enable), I wrote this tool instead!</p>
+			<p>All code is executed locally in the browser. No information is transmitted, collected, or retained. Source code is open source and auditable. If you feel more comfortable, you can download and run this web page locally. This tool will also work with your device disconnected from Wi-Fi, if you want to be extra certain that no information is leaked.</p>
+			<b>Caveats</b>
+			<ul>
+				<li><p>This tool works best with <code>chrome://flags/#enable-web-bluetooth-new-permissions-backend</code> set to Enabled, but isn't fully necessary. (Ignore this note if you aren't familiar with Chrome flags)</p>
+				<li><p>This tool was developed independently and is not affiliated with Eight Sleep</p>
+				<li><p>No warranty is implied while using this tool</p>
+			</ul>
+		</fieldset>
+		<fieldset>
+			<legend>📶 Step 1: Select Pod via Bluetooth</legend>
+			<p>First, let's find your Pod.</p>
+			<p>Enable Bluetooth on this device (laptop/computer/tablet)</p>
+			<p>Click the button below to begin searching. Searching can sometimes take 30+ seconds, even in close proximity.</p>
+			<button id="findDevice">Select Pod</button>
+			<button id="clearDevice">Reset selection</button>
+			<p id="selectedPodName"></p>
+			<i id="stepOneComplete" class="hidden">Proceed to step 2</i>
+			<p id="podBluetoothError" class="error"></p>
+		</fieldset>
+		<fieldset>
+			<legend>🔗 Step 2. Establish contact with Pod</legend>
+			<p>Click the button below to connect to your Pod. This may take several seconds. Intermittent errors sometimes happen, so you may need to try multiple times.</p>
+			<button id="establishContact">Connect to Pod</button>
+			<p id="serverStatus" class="success"></p>
+			<p id="characteristicStatus" class="success"></p>
+			<i id="stepTwoComplete" class="hidden">Proceed to step 3</i>
+			<p id="contactError" class="error"></p>
+		</fieldset>
+		<fieldset>
+			<legend>🔐 Step 3: Enter Wi-Fi SSID and password</legend>
+			<label>
+				SSID:
+				<input id="ssid" type="text" />
+			</label>
+			<br /><br />
+			<label>
+				Password:
+				<input id="password" type="password" />
+				<a id="togglePassword" href="javascript:;">Show</a>
+			</label>
+			<br /><br />
+			<button id="login">Submit credentials</button>
+		</fieldset>
+		<fieldset>
+			<legend>✅ Step 4: Confirm connection status</legend>
+			<p>Confirm your pod has connected and successfully paired by looking at the LED color indicator:</p>
+			<ul>
+				<li>White (pulsing or steady) - Success!
+				<li>Yellow (pulsing) - Pod is unable to connect to Wi-Fi; maybe you supplied incorrect credentials? Trigger pairing mode (pulsing blue) and try again
+				<li>Blue (pulsing) - Pod is still in pairing mode; please try these steps again
+			</ul>
+		</fieldset>
+	</body>
+</html>
